@@ -25,10 +25,11 @@ struct VistaRaiz: View {
             EmptyView()
         case .asomada(let id):
             if let s = vigia.sesiones.first(where: { $0.id == id }) {
-                Aviso(sesion: s, solicitudes: permisos.de(id), ui: ui)
+                Aviso(sesion: s, solicitudes: permisos.de(id), sinEfecto: permisos.sinEfecto.contains(id), ui: ui)
             }
         case .expandida:
-            Lista(sesiones: visibles, solicitudes: Dictionary(grouping: permisos.pendientes, by: \.sesion), ui: ui)
+            Lista(sesiones: visibles, solicitudes: Dictionary(grouping: permisos.pendientes, by: \.sesion),
+                  sinEfecto: permisos.sinEfecto, ui: ui)
         }
     }
 
@@ -42,6 +43,7 @@ struct VistaRaiz: View {
 struct Aviso: View {
     let sesion: Sesion
     var solicitudes: [Solicitud] = []
+    var sinEfecto = false
     @ObservedObject var ui: Interfaz
 
     var body: some View {
@@ -52,8 +54,8 @@ struct Aviso: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14)
                     .padding(.top, 8)
-                FilaSesion(sesion: sesion, solicitudes: solicitudes, alPulsar: { ui.ir(sesion) },
-                           decidir: ui.decidir)
+                FilaSesion(sesion: sesion, solicitudes: solicitudes, sinEfecto: sinEfecto,
+                           alPulsar: { ui.ir(sesion) }, decidir: ui.decidir)
                     .padding(.bottom, 4)
             }
         }
@@ -240,6 +242,7 @@ struct Tarjeta<Contenido: View>: View {
 struct Lista: View {
     let sesiones: [Sesion]
     var solicitudes: [String: [Solicitud]] = [:]
+    var sinEfecto = Set<String>()
     @ObservedObject var ui: Interfaz
 
     private struct Grupo: Identifiable {
@@ -319,8 +322,8 @@ struct Lista: View {
                 .help(grupo.id)
 
                 ForEach(grupo.sesiones) { s in
-                    FilaSesion(sesion: s, solicitudes: solicitudes[s.id] ?? [], alPulsar: { ui.ir(s) },
-                               decidir: ui.decidir)
+                    FilaSesion(sesion: s, solicitudes: solicitudes[s.id] ?? [], sinEfecto: sinEfecto.contains(s.id),
+                               alPulsar: { ui.ir(s) }, decidir: ui.decidir)
                 }
             }
         }
@@ -331,6 +334,8 @@ struct Lista: View {
 struct FilaSesion: View {
     let sesion: Sesion
     var solicitudes: [Solicitud] = []
+    /// Se aprobo desde Sauron pero la sesion sigue esperando.
+    var sinEfecto = false
     let alPulsar: () -> Void
     var decidir: (Solicitud, Bool) -> Void = { _, _ in }
     // `@State` es una macro en este SDK y su plugin solo viene con Xcode. Con
@@ -348,9 +353,12 @@ struct FilaSesion: View {
                 .onTapGesture(perform: alPulsar)
                 .help("\(s.carpeta)\n\(s.titulo)")
             ForEach(solicitudes) { sol in
-                BloquePermiso(solicitud: sol, amplio: encima.wrappedValue) { permitir in
+                BloquePermiso(solicitud: sol, amplio: encima.wrappedValue, abrir: alPulsar) { permitir in
                     decidir(sol, permitir)
                 }
+            }
+            if sinEfecto && solicitudes.isEmpty {
+                AvisoSinEfecto(abrir: alPulsar)
             }
         }
         .padding(.horizontal, 10)
@@ -361,6 +369,17 @@ struct FilaSesion: View {
         )
         .padding(.horizontal, 4)
         .onHover { encima.wrappedValue = $0 }
+    }
+
+    /// El registro de la sesion no distingue un plan de una pregunta; la
+    /// peticion pendiente si.
+    private func textoEstado(_ s: Sesion) -> String {
+        guard s.fase == .atencion, let tipo = solicitudes.first?.tipo else { return s.textoFase }
+        switch tipo {
+        case .plan: return "Plan para aprobar"
+        case .pregunta: return "Te hace una pregunta"
+        case .permiso: return "Pide permiso"
+        }
     }
 
     private func fila(_ s: Sesion) -> some View {
@@ -376,7 +395,7 @@ struct FilaSesion: View {
                     .truncationMode(.tail)
                 HStack(spacing: 6) {
                     IconoFase(fase: s.fase)
-                    Text(s.textoFase).foregroundStyle(s.fase.color)
+                    Text(textoEstado(s)).foregroundStyle(s.fase.color)
                     if s.modo != .desconocido {
                         Text(s.modo.etiqueta)
                             .font(.system(size: 9.5, weight: .semibold))
@@ -400,6 +419,8 @@ struct FilaSesion: View {
 struct BloquePermiso: View {
     let solicitud: Solicitud
     let amplio: Bool
+    /// Llevar a la sesion en VS Code (para lo que no se contesta aqui).
+    let abrir: () -> Void
     let decidir: (Bool) -> Void
 
     var body: some View {
@@ -410,7 +431,7 @@ struct BloquePermiso: View {
             }
             .foregroundStyle(Tema.ambar)
             Text(verbatim: solicitud.objeto)
-                .font(.system(size: 10.5, design: .monospaced))
+                .font(solicitud.tipo == .permiso ? .system(size: 10.5, design: .monospaced) : .system(size: 11))
                 .foregroundStyle(Color.primary.opacity(0.92))
                 .lineLimit(amplio ? 10 : 2)
                 .truncationMode(.tail)
@@ -422,8 +443,16 @@ struct BloquePermiso: View {
                 .help(solicitud.detalle)
             HStack(spacing: 8) {
                 Spacer()
-                boton("Rechazar", color: Tema.rojo, relleno: false) { decidir(false) }
-                boton("Permitir", color: Tema.verde, relleno: true) { decidir(true) }
+                switch solicitud.tipo {
+                case .permiso:
+                    boton("Rechazar", color: Tema.rojo, relleno: false) { decidir(false) }
+                    boton("Permitir", color: Tema.verde, relleno: true) { decidir(true) }
+                case .plan:
+                    boton("Seguir planificando", color: Tema.rojo, relleno: false) { decidir(false) }
+                    boton("Aprobar plan", color: Tema.verde, relleno: true) { decidir(true) }
+                case .pregunta:
+                    boton("Responder en VS Code", color: Tema.ambar, relleno: true, accion: abrir)
+                }
             }
         }
         .padding(.leading, 13)
@@ -474,5 +503,28 @@ struct Relativo: View {
         if s < 3600 { return "hace \(Int(s / 60)) min" }
         if s < 86400 { return "hace \(Int(s / 3600)) h" }
         return "hace \(Int(s / 86400)) d"
+    }
+}
+
+/// Se aprobo desde Sauron, pero la sesion sigue esperando: Claude Code no
+/// tomo la respuesta (por ejemplo, una herramienta que solo acepta la del
+/// dialogo de VS Code).
+struct AvisoSinEfecto: View {
+    let abrir: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tema.ambar)
+            Text("VS Code no tomó la respuesta de Sauron. Contesta allí.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(action: abrir) {
+                Text("Abrir").foregroundStyle(Tema.ambar)
+            }
+            .buttonStyle(.plain)
+        }
+        .font(.system(size: 10.5, weight: .medium))
+        .padding(.leading, 13)
     }
 }

@@ -11,6 +11,7 @@ extension Controlador {
         let destino = URL(fileURLWithPath: carpeta, isDirectory: true)
         try? FileManager.default.createDirectory(at: destino, withIntermediateDirectories: true)
         var pasos: [(TimeInterval, () -> Void)] = []
+        var huboDecision = false
 
         pasos.append((1.5, { [self] in
             informar("contraida")
@@ -33,7 +34,7 @@ extension Controlador {
             imprimirMenu(construirMenu(), sangria: "  ")
             print("canal de permisos: \(permisos.activo ? "escuchando" : "INACTIVO")")
             if let s = permisos.pendientes.first {
-                print("permiso pendiente: \(s.herramienta) · \(s.accion) · \(s.objeto)")
+                print("permiso pendiente (\(s.tipo.rawValue)): \(s.herramienta) · \(s.accion) · \(s.objeto.replacingOccurrences(of: "\n", with: " / "))")
                 ui.presentacion = .asomada(s.sesion)
             } else {
                 print("permisos pendientes: 0")
@@ -45,11 +46,21 @@ extension Controlador {
             guard let s = permisos.pendientes.first else { return }
             informar("permiso")
             guardarVentana("ventana-permiso", destino)
+            if s.tipo == .pregunta {
+                print("pregunta: solo aviso, sin decisión; pendientes: \(permisos.pendientes.count)")
+                return
+            }
             let rechazar = ProcessInfo.processInfo.environment["SAURON_PRUEBA_RECHAZAR"] != nil
             ui.decidir(s, !rechazar)
-            print("respondido: \(rechazar ? "rechazar" : "permitir"); pendientes ahora: \(permisos.pendientes.count)")
+            huboDecision = true
+            print("respondido (\(s.tipo.rawValue)): \(rechazar ? "rechazar" : "permitir"); pendientes ahora: \(permisos.pendientes.count)")
         }))
-        pasos.append((0.5, { NSApp.terminate(nil) }))
+        // Red de seguridad: con datos falsos la sesion sigue esperando tras
+        // aprobar, asi que debe quedar marcada como "sin efecto".
+        pasos.append((GestorPermisos.comprobacion + 0.6, { [self] in
+            if huboDecision { print("sin efecto: \(permisos.sinEfecto.count)") }
+        }))
+        pasos.append((0.3, { NSApp.terminate(nil) }))
 
         var demora: TimeInterval = 0
         for (espera, paso) in pasos {

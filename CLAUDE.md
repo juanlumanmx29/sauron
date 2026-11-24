@@ -57,6 +57,20 @@ Sources/Sauron/
   `GestorPermisos` suelta la conexión cuando la sesión deja de esperar, con
   2,5 s de margen: el hook y el cambio de estado del registro llegan en
   cualquier orden.
+- **Aprobar un plan exige `updatedInput`.** Para herramientas con
+  `requiresUserInteraction` (como `ExitPlanMode`), Claude Code descarta un
+  `allow` del hook (`qho` en `Wxn`) y sigue esperando el diálogo, salvo que
+  traiga `updatedInput` y la herramienta esté en `u2i` (`ExitPlanMode`,
+  `AskUserQuestion`). El hook devuelve la entrada sin cambios: si cambiara, la
+  rechaza. En los permisos normales **no** se manda `updatedInput`: forzaría a
+  reevaluar la llamada (`Ek`) y algunas aprobaciones pasarían a rechazo.
+- **`AskUserQuestion` solo se avisa**: necesita las respuestas elegidas, que
+  Sauron no escribe. El servidor suelta el hook al instante y la tarjeta
+  ofrece "Responder en VS Code".
+- **Red de seguridad**: si 3 s después de aprobar desde Sauron la sesión sigue
+  esperando y no llegó otra petición, se marca "sin efecto" y se vuelve a
+  asomar con el aviso. Antes, un `allow` ignorado hacía desaparecer la tarjeta
+  mientras VS Code seguía esperando.
 - **El hook solo actúa con `CLAUDE_CODE_ENTRYPOINT=claude-vscode`.** En la
   terminal el flujo de permisos es otro y no se probó.
 - **`bind` con umask 077 deja el socket en 0700**, no 0600: se fija con
@@ -177,9 +191,10 @@ $F --sonidos
 ```
 
 Para el puente de permisos, `pruebas/permisos.py` (detener antes el Sauron
-instalado: comparten el socket). Cubre permitir, rechazar, Sauron apagado,
-sesión que no espera, hook muerto, sesión de terminal, servidor impostor y
-permisos del socket.
+instalado: comparten el socket). Cubre permitir, rechazar, aprobar un plan
+(con `updatedInput` idéntico), seguir planificando, pregunta como aviso, red
+de seguridad, Sauron apagado, sesión que no espera, hook muerto, sesión de
+terminal, servidor impostor y permisos del socket.
 
 Para la máquina de estados, simular transiciones escribiendo registros falsos
 en una carpeta apuntada por `SAURON_CLAUDE_DIR` (con `sessions/`, `ide/` y

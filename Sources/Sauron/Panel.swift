@@ -224,7 +224,8 @@ final class Controlador: NSObject {
         panel.orderFrontRegardless()
 
         vigia.alOcurrir = { [weak self] e in self?.manejar(e) }
-        permisos.alLlegar = { [weak self] s in self?.llegoSolicitud(s) }
+        permisos.alLlegar = { [weak self] s in self?.asomarPorPermiso(s.sesion) }
+        permisos.alQuedarSinEfecto = { [weak self] sesion in self?.asomarPorPermiso(sesion) }
         permisos.iniciar()
         suscripciones.append(vigia.$sesiones.sink { [weak self] s in self?.permisos.sincronizar(s) })
         suscripciones.append(ui.$presentacion.removeDuplicates().sink { [weak self] p in self?.ajustarMonitor(p) })
@@ -273,16 +274,18 @@ final class Controlador: NSObject {
         }
     }
 
-    private func llegoSolicitud(_ s: Solicitud) {
+    /// Asoma la tarjeta de una sesion con algo que contestar: una peticion
+    /// nueva, o una aprobacion que VS Code no tomo.
+    private func asomarPorPermiso(_ sesion: String) {
         guard ui.asomarse, desfase == nil else { return }
         switch ui.presentacion {
         case .expandida:
             return
-        case .asomada(let id) where id == s.sesion:
+        case .asomada(let id) where id == sesion:
             programarCierre(Self.duracionPermiso)
         default:
-            guard vigia.sesiones.contains(where: { $0.id == s.sesion }) else { return }
-            ui.presentacion = .asomada(s.sesion)
+            guard vigia.sesiones.contains(where: { $0.id == sesion }) else { return }
+            ui.presentacion = .asomada(sesion)
             programarCierre(Self.duracionPermiso)
         }
     }

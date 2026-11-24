@@ -22,6 +22,12 @@ pestaña de esa sesión, y los permisos se pueden aprobar desde el propio widget
   **Rechazar**. El detalle completo (descripción, contenido, cambios) está en
   el tooltip, y al pasar el puntero se ven más líneas. Permitir vale solo para
   esa vez. El diálogo de VS Code sigue disponible: gana el primero que conteste.
+  - **Planes**: la tarjeta muestra el título y el comienzo del plan, con
+    **Aprobar plan** y **Seguir planificando**.
+  - **Preguntas** (cuando Claude ofrece opciones): se muestran la pregunta y
+    sus opciones, pero se contestan en VS Code (**Responder en VS Code**).
+  - Si después de aprobar desde Sauron la sesión sigue esperando, la tarjeta
+    avisa que VS Code no tomó la respuesta y ofrece abrir la sesión.
 - **Aviso**: cuando una sesión cambia, la fila se asoma unos segundos y suena
   una fanfarria (atención) o un arpa (terminó). Si el puntero está
   encima, no se cierra.

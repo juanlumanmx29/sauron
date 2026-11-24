@@ -82,9 +82,11 @@ informe('permisos del socket', modo == '0o600' and carpeta == '0o700', f'socket 
 time.sleep(0.5)
 p, t0 = hook(S1); rc, out, dt = esperar(p, t0)
 salida_a = s.communicate(timeout=20)[0]
-try: dec = json.loads(out)['hookSpecificOutput']['decision']['behavior']
-except Exception: dec = None
-informe('permitir', rc == 0 and dec == 'allow', f'rc={rc} salida={out!r} tras {dt:.1f} s')
+try: d = json.loads(out)['hookSpecificOutput']['decision']; dec = d['behavior']
+except Exception: d, dec = {}, None
+informe('permitir', rc == 0 and dec == 'allow' and 'updatedInput' not in d, f'rc={rc} salida={out!r} tras {dt:.1f} s')
+informe('red de seguridad (sigue esperando)', 'sin efecto: 1' in salida_a,
+        [l.strip() for l in salida_a.splitlines() if 'sin efecto' in l][:1].__str__())
 for l in salida_a.splitlines():
     if any(k in l for k in ('permiso', 'respondido', 'canal')): print('        ' + l.strip())
 
@@ -97,6 +99,38 @@ try:
     d = json.loads(out)['hookSpecificOutput']; dec = d['decision']['behavior']; msj = d['decision'].get('message')
 except Exception: dec = msj = None
 informe('rechazar', rc == 0 and dec == 'deny' and bool(msj), f'rc={rc} salida={out!r}')
+
+# H: aprobar un plan -> allow con updatedInput identico a la entrada
+PLAN = {"plan": "# Plan de prueba\n\nPaso uno: crear el archivo.", "planFilePath": "/ejemplo/plan.md"}
+s = sauron('--autoprueba', os.path.join(W, 'autoprueba-plan'))
+esperar_socket(); time.sleep(0.5)
+p, t0 = hook(S1, tool_name='ExitPlanMode', tool_input=PLAN); rc, out, dt = esperar(p, t0)
+salida_h = s.communicate(timeout=20)[0]
+try: d = json.loads(out)['hookSpecificOutput']['decision']
+except Exception: d = {}
+informe('plan aprobado', rc == 0 and d.get('behavior') == 'allow' and d.get('updatedInput') == PLAN,
+        f'rc={rc} salida={out[:160]!r}')
+print('        ' + ' '.join(l.strip() for l in salida_h.splitlines() if 'pendiente (' in l))
+
+# I: seguir planificando -> deny con su mensaje
+s = sauron('--autoprueba', os.path.join(W, 'autoprueba-plan-no'), extra_env={'SAURON_PRUEBA_RECHAZAR': '1'})
+esperar_socket(); time.sleep(0.5)
+p, t0 = hook(S1, tool_name='ExitPlanMode', tool_input=PLAN); rc, out, dt = esperar(p, t0)
+s.communicate(timeout=20)
+try: d = json.loads(out)['hookSpecificOutput']['decision']
+except Exception: d = {}
+informe('seguir planificando', rc == 0 and d.get('behavior') == 'deny' and 'planificando' in d.get('message', ''),
+        f'rc={rc} mensaje={d.get("message")!r}')
+
+# J: pregunta -> el hook sale enseguida sin decidir y Sauron mantiene el aviso
+PREGUNTA = {"questions": [{"question": "¿A o B?", "header": "Elegir", "multiSelect": False,
+                           "options": [{"label": "A"}, {"label": "B"}]}]}
+s = sauron('--autoprueba', os.path.join(W, 'autoprueba-pregunta'))
+esperar_socket(); time.sleep(0.5)
+p, t0 = hook(S1, tool_name='AskUserQuestion', tool_input=PREGUNTA); rc, out, dt = esperar(p, t0)
+salida_j = s.communicate(timeout=20)[0]
+informe('pregunta: solo aviso', rc == 0 and out == '' and dt < 1.5 and 'pregunta: solo aviso' in salida_j,
+        f'rc={rc} salida={out!r} {dt*1000:.0f} ms; ' + ' '.join(l.strip() for l in salida_j.splitlines() if 'pregunta:' in l))
 
 # D: el hook muere a mitad de camino -> Sauron lo retira
 s = sauron('--autoprueba', os.path.join(W, 'autoprueba-muerto'))

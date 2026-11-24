@@ -48,6 +48,21 @@ enum Capturas {
             cwd: "/ejemplo/panel-web")
         guardar(Aviso(sesion: ejemplo[0], ui: ui), "aviso-atencion", destino)
         guardar(Aviso(sesion: ejemplo[0], solicitudes: [permiso], ui: ui), "aviso-permiso", destino)
+        let plan = Solicitud(
+            id: "p3", sesion: "2", herramienta: "ExitPlanMode",
+            entrada: ["plan": "# Rediseñar la página de configuración\n\n## Contexto\n\nLa página mezcla ajustes de cuenta y de equipo, y los usuarios no encuentran la facturación.\n\n## Pasos\n\n1. Separar en pestañas.\n2. Mover facturación arriba.",
+                      "planFilePath": "/ejemplo/planes/configuracion.md"],
+            cwd: "/ejemplo/panel-web")
+        let pregunta = Solicitud(
+            id: "p4", sesion: "2", herramienta: "AskUserQuestion",
+            entrada: ["questions": [["question": "¿Qué base de datos usamos para las pruebas?", "header": "Base",
+                                     "multiSelect": false,
+                                     "options": [["label": "SQLite", "description": "Rápida, en memoria"],
+                                                 ["label": "Postgres en Docker", "description": "Igual a producción"]]]]],
+            cwd: "/ejemplo/panel-web")
+        guardar(Aviso(sesion: ejemplo[1], solicitudes: [plan], ui: ui), "aviso-plan", destino)
+        guardar(Aviso(sesion: ejemplo[1], solicitudes: [pregunta], ui: ui), "aviso-pregunta", destino)
+        guardar(Aviso(sesion: ejemplo[0], sinEfecto: true, ui: ui), "aviso-sin-efecto", destino)
         guardar(Lista(sesiones: ejemplo, solicitudes: ["1": [permiso], "2": [edicion]], ui: ui),
                 "lista-permisos", destino)
         guardar(Aviso(sesion: ejemplo[2], ui: ui), "aviso-termino", destino)

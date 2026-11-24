@@ -80,6 +80,8 @@ enum CanalPermisos {
 
 enum HookPermiso {
     static let mensajeRechazo = "El usuario rechazó este permiso desde Sauron."
+    static let mensajeSeguirPlanificando =
+        "El usuario prefiere seguir planificando (respondió desde Sauron). No ejecutes el plan todavía."
 
     /// `Sauron --hook-permiso`. Nunca falla hacia Claude Code: ante cualquier
     /// problema sale con 0 y sin escribir nada, y Claude Code sigue con su
@@ -123,10 +125,22 @@ enum HookPermiso {
         guard let fin = respuesta.firstIndex(of: 0x0A),
               let r = (try? JSONSerialization.jsonObject(with: Data(respuesta[..<fin]))) as? [String: Any]
         else { return 0 }
-        let decision: [String: Any]
+        var decision: [String: Any]
         switch r["decision"] as? String {
-        case "allow": decision = ["behavior": "allow"]
-        case "deny": decision = ["behavior": "deny", "message": mensajeRechazo]
+        case "allow":
+            decision = ["behavior": "allow"]
+            // Las herramientas que piden interaccion del usuario (aprobar un
+            // plan) ignoran un "allow" del hook salvo que traiga
+            // `updatedInput`; Claude Code solo lo admite para ExitPlanMode y
+            // AskUserQuestion. Se devuelve la entrada tal cual: si cambiara,
+            // la rechaza. En los permisos normales NO se manda: obligaria a
+            // reevaluar la llamada y algunas aprobaciones pasarian a rechazo.
+            if json["tool_name"] as? String == "ExitPlanMode", let entrada = json["tool_input"] as? [String: Any] {
+                decision["updatedInput"] = entrada
+            }
+        case "deny":
+            let mensaje = json["tool_name"] as? String == "ExitPlanMode" ? mensajeSeguirPlanificando : mensajeRechazo
+            decision = ["behavior": "deny", "message": mensaje]
         default: return 0
         }
         let salida: [String: Any] = [
@@ -272,7 +286,18 @@ final class ServidorPermisos {
 
 /// Una peticion de permiso pendiente, ya traducida a algo legible.
 struct Solicitud: Identifiable, Equatable {
+    /// Que se puede contestar desde Sauron.
+    enum Tipo: String {
+        /// Permitir o rechazar.
+        case permiso
+        /// Aprobar el plan o seguir planificando.
+        case plan
+        /// Pide respuestas que Sauron no puede escribir: solo aviso.
+        case pregunta
+    }
+
     let id: String
+    let tipo: Tipo
     let sesion: String
     let herramienta: String
     /// Que pide, en palabras: "Ejecutar comando", "Editar archivo"...
@@ -299,6 +324,11 @@ struct Solicitud: Identifiable, Equatable {
         self.sesion = sesion
         self.herramienta = herramienta
         self.llegada = llegada
+        switch herramienta {
+        case "ExitPlanMode": tipo = .plan
+        case "AskUserQuestion": tipo = .pregunta
+        default: tipo = .permiso
+        }
         let d = Self.describir(herramienta, entrada, cwd)
         accion = d.accion
         objeto = String(d.objeto.prefix(800))
@@ -360,6 +390,31 @@ struct Solicitud: Identifiable, Equatable {
         case "WebSearch":
             let q = texto("query") ?? "?"
             return ("Buscar en la web", q, q, "globe")
+        case "ExitPlanMode":
+            // Titulo (primer encabezado) y las primeras lineas con texto.
+            let plan = texto("plan") ?? ""
+            let todas = plan.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            let titulo = todas.first { $0.hasPrefix("#") }.map { $0.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces) }
+            let cuerpo = todas.filter { !$0.isEmpty && !$0.hasPrefix("#") }.prefix(3).joined(separator: "\n")
+            let resumen = [titulo, cuerpo.isEmpty ? nil : cuerpo].compactMap { $0 }.joined(separator: "\n")
+            return ("Aprobar plan", resumen.isEmpty ? "Plan sin texto" : resumen, lineas(plan, 60), "list.bullet.clipboard")
+        case "AskUserQuestion":
+            let preguntas = (e["questions"] as? [[String: Any]]) ?? []
+            // Cada pregunta con sus opciones en una linea: "SQLite · Postgres".
+            let textos = preguntas.compactMap { p -> String? in
+                guard let q = p["question"] as? String else { return nil }
+                let opciones = ((p["options"] as? [[String: Any]]) ?? []).compactMap { $0["label"] as? String }
+                return opciones.isEmpty ? q : q + "\n" + opciones.joined(separator: " · ")
+            }
+            let detalle = preguntas.map { p -> String in
+                let opciones = ((p["options"] as? [[String: Any]]) ?? []).map { o -> String in
+                    let etiqueta = o["label"] as? String ?? "?"
+                    return (o["description"] as? String).map { "• \(etiqueta): \($0)" } ?? "• \(etiqueta)"
+                }
+                return ([p["question"] as? String ?? "?"] + opciones).joined(separator: "\n")
+            }.joined(separator: "\n\n")
+            return ("Pregunta", textos.isEmpty ? "Pregunta" : textos.joined(separator: "\n"),
+                    detalle.isEmpty ? json() : detalle, "questionmark.bubble")
         case "Task", "Agent":
             let d = texto("description") ?? "Subagente"
             return ("Lanzar subagente", d, juntar(d, texto("prompt").map { lineas($0, 20) }), "person.2")
@@ -380,9 +435,18 @@ struct Solicitud: Identifiable, Equatable {
 /// Peticiones pendientes, publicadas para la interfaz.
 final class GestorPermisos: ObservableObject {
     @Published private(set) var pendientes: [Solicitud] = []
+    /// Sesiones que siguen esperando aunque se aprobo desde Sauron: Claude
+    /// Code no tomo la respuesta y hay que contestar en VS Code.
+    @Published private(set) var sinEfecto = Set<String>()
     /// Llega una peticion nueva (para asomar la tarjeta).
     var alLlegar: ((Solicitud) -> Void)?
+    /// Una aprobacion quedo sin efecto (para volver a asomar la tarjeta).
+    var alQuedarSinEfecto: ((String) -> Void)?
     private(set) var activo = false
+    private var aprobadas: [String: Date] = [:]
+    /// Margen para ver si una aprobacion tuvo efecto: la sesion deberia dejar
+    /// de esperar en milisegundos.
+    static let comprobacion: TimeInterval = 3
 
     private let servidor = ServidorPermisos()
     private var sesiones: [Sesion] = []
@@ -395,6 +459,10 @@ final class GestorPermisos: ObservableObject {
     func iniciar() {
         servidor.alRecibir = { [weak self] s in
             guard let self else { return }
+            // Una pregunta no se puede contestar desde aqui: se suelta el hook
+            // al instante (Claude Code sigue con su dialogo) y queda el aviso.
+            if s.tipo == .pregunta { self.servidor.soltar(s.id) }
+            self.sinEfecto.remove(s.sesion)
             self.pendientes.append(s)
             self.alLlegar?(s)
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.gracia + 0.1) { [weak self] in
@@ -412,8 +480,14 @@ final class GestorPermisos: ObservableObject {
     }
 
     func decidir(_ s: Solicitud, permitir: Bool) {
+        guard s.tipo != .pregunta else { return }
         servidor.responder(s.id, permitir: permitir)
         pendientes.removeAll { $0.id == s.id }
+        guard permitir else { return }
+        aprobadas[s.sesion] = Date()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.comprobacion + 0.2) { [weak self] in
+            self?.revisar()
+        }
     }
 
     func sincronizar(_ sesiones: [Sesion]) {
@@ -426,15 +500,28 @@ final class GestorPermisos: ObservableObject {
     /// Code conocida.
     private func revisar() {
         let ahora = Date()
-        let esperando = Set(sesiones.filter {
-            $0.fase == .atencion && ($0.esperaPor == nil || $0.esperaPor == "permission prompt")
-        }.map(\.id))
+        // Cualquier espera: un plan o una pregunta no siempre figuran como
+        // "permission prompt".
+        let esperando = Set(sesiones.filter { $0.fase == .atencion }.map(\.id))
         let viejas = pendientes.filter {
             ahora.timeIntervalSince($0.llegada) >= Self.gracia && !esperando.contains($0.sesion)
         }
-        guard !viejas.isEmpty else { return }
-        for s in viejas { servidor.soltar(s.id) }
-        let ids = Set(viejas.map(\.id))
-        pendientes.removeAll { ids.contains($0.id) }
+        if !viejas.isEmpty {
+            for s in viejas { servidor.soltar(s.id) }
+            let ids = Set(viejas.map(\.id))
+            pendientes.removeAll { ids.contains($0.id) }
+        }
+
+        // Red de seguridad: si tras aprobar la sesion sigue esperando y no
+        // llego otra peticion, Claude Code no tomo la respuesta.
+        for (sesion, cuando) in aprobadas where ahora.timeIntervalSince(cuando) >= Self.comprobacion {
+            aprobadas[sesion] = nil
+            if esperando.contains(sesion), de(sesion).isEmpty, !sinEfecto.contains(sesion) {
+                sinEfecto.insert(sesion)
+                alQuedarSinEfecto?(sesion)
+            }
+        }
+        let resueltas = sinEfecto.subtracting(esperando)
+        if !resueltas.isEmpty { sinEfecto.subtract(resueltas) }
     }
 }
