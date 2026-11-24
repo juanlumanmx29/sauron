@@ -60,6 +60,12 @@ final class LectorTranscript {
         return datos
     }
 
+    /// Carpeta de los subagentes de una sesion, junto a su transcript (una
+    /// vez ubicado por `datos`).
+    func carpetaSubagentes(de sesion: String) -> URL? {
+        cache[sesion]?.url.deletingPathExtension().appendingPathComponent("subagents", isDirectory: true)
+    }
+
     func olvidar(salvo activas: Set<String>) {
         cache = cache.filter { activas.contains($0.key) }
     }

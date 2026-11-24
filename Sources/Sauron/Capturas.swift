@@ -16,17 +16,18 @@ enum Capturas {
         let ahora = Date()
 
         func s(_ id: String, _ carpeta: String, _ titulo: String, _ modo: Modo, _ fase: Fase,
-               _ espera: String? = nil, hace: TimeInterval) -> Sesion {
+               _ espera: String? = nil, hace: TimeInterval, subagentes: Int = 0, procesos: Int = 0) -> Sesion {
             Sesion(id: id, pid: 0, cwd: "/ejemplo/" + carpeta, carpeta: "/ejemplo/" + carpeta,
                    titulo: titulo, modo: modo, fase: fase, esperaPor: espera,
-                   desde: ahora.addingTimeInterval(-hace))
+                   desde: ahora.addingTimeInterval(-hace), subagentes: subagentes, procesos: procesos)
         }
         let ejemplo = [
             s("1", "api", "Migrar autenticación a OAuth", .normal, .atencion, "permission prompt", hace: 20),
             s("2", "panel-web", "Rediseñar la página de configuración", .plan, .atencion, "input needed", hace: 95),
             s("3", "datos", "Limpiar duplicados del padrón de clientes", .auto, .termino, hace: 130),
             s("4", "api", "Corregir las pruebas de integración del módulo de pagos con un título largo", .aceptaEdiciones, .trabajando, hace: 300),
-            s("5", "scripts", "Automatizar el respaldo nocturno", .sinPermisos, .trabajando, hace: 40),
+            s("5", "scripts", "Automatizar el respaldo nocturno", .sinPermisos, .trabajando, hace: 40, subagentes: 2),
+            s("8", "datos", "Importar los pedidos del trimestre", .auto, .segundoPlano, hace: 240, subagentes: 1, procesos: 1),
             s("6", "docs", "Actualizar la guía de instalación", .auto, .inactiva, hace: 3700),
             s("7", "docs", "Nueva sesión", .desconocido, .inactiva, hace: 7200),
         ]

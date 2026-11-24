@@ -28,6 +28,7 @@ struct RegistroSesion {
     let esperaPor: String?      // "permission prompt", "input needed", "dialog open"
     let actualizado: Date
     let origen: String          // entrypoint: "claude-vscode", "cli", ...
+    let inicio: Date?           // startedAt: cuando arranco este proceso
 }
 
 enum Registro {
@@ -75,7 +76,8 @@ enum Registro {
                 estado: o["status"] as? String ?? "idle",
                 esperaPor: o["waitingFor"] as? String,
                 actualizado: Date(timeIntervalSince1970: ms / 1000),
-                origen: origen
+                origen: origen,
+                inicio: (o["startedAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
             )
             // Una misma conversacion puede aparecer en dos procesos (al
             // reanudarla): manda el registro mas reciente.

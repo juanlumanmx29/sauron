@@ -16,6 +16,10 @@ pestaña de esa sesión, y los permisos se pueden aprobar desde el propio widget
 - **Clic** en la píldora: se expande con la lista de sesiones agrupadas por
   carpeta de VS Code. Cada fila muestra el nombre de la sesión, su estado, su
   modo de permisos y hace cuánto cambió.
+- **Trabajo en segundo plano**: si una sesión termina su turno pero deja
+  comandos o subagentes corriendo, figura **En segundo plano** (y cuenta como
+  trabajando) en vez de "Terminó". Unas fichas muestran cuántos subagentes y
+  comandos siguen. El aviso de "Terminó" llega cuando acaba todo.
 - **Clic en una sesión**: enfoca su ventana de VS Code y abre su pestaña.
 - **Aprobar permisos**: cuando una sesión pide permiso, su tarjeta muestra qué
   pide (el comando, el archivo, la URL) con los botones **Permitir** y
@@ -113,6 +117,10 @@ la respuesta.
 - Solo vigila sesiones de la extensión de VS Code, no las de la terminal.
   Tampoco aprueba sus permisos: el hook sale de inmediato en la terminal.
 - Aprobar desde Sauron no ofrece "permitir siempre".
+- Los comandos en segundo plano se reconocen por cómo los lanza Claude Code
+  (un `zsh` con su `shell-snapshot`) y los subagentes por sus archivos
+  `subagents/*.meta.json`. Si Claude Code cambia eso, vuelve a verse
+  "Terminó" antes de tiempo.
 
 ## Diagnóstico
 

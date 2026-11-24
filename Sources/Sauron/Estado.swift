@@ -15,6 +15,10 @@ struct Sesion: Identifiable, Equatable {
     let fase: Fase
     let esperaPor: String?
     let desde: Date
+    /// Subagentes en curso (en cualquier fase).
+    var subagentes = 0
+    /// Comandos en segundo plano (solo se miran con la sesion en reposo).
+    var procesos = 0
 
     var nombreCarpeta: String {
         let n = (carpeta as NSString).lastPathComponent
@@ -32,8 +36,21 @@ struct Sesion: Identifiable, Equatable {
             }
         case .termino: return "Terminó"
         case .trabajando: return "Trabajando"
+        case .segundoPlano: return "En segundo plano"
         case .inactiva: return "Inactiva"
         }
+    }
+
+    /// Detalle del trabajo en curso, para el tooltip de las fichas.
+    var detalleActividad: String {
+        var partes: [String] = []
+        if subagentes > 0 { partes.append(Self.cuenta(subagentes, "subagente", "trabajando", "trabajando")) }
+        if procesos > 0 { partes.append(Self.cuenta(procesos, "comando", "en segundo plano", "en segundo plano")) }
+        return partes.joined(separator: "\n")
+    }
+
+    private static func cuenta(_ n: Int, _ cosa: String, _ uno: String, _ varios: String) -> String {
+        n == 1 ? "1 \(cosa) \(uno)" : "\(n) \(cosa)s \(varios)"
     }
 }
 
@@ -57,11 +74,15 @@ final class Vigia: ObservableObject {
     /// Tiempo que debe sostenerse "idle" antes de avisar: al terminar un turno
     /// con un mensaje en cola, la sesion pasa por idle un instante.
     static let confirmacion: TimeInterval = 1.5
+    /// Estado propio: "idle" en el registro, con trabajo en segundo plano.
+    private static let fondo = "fondo"
 
     private struct Lectura {
         let registro: RegistroSesion
         let transcript: DatosTranscript
         let carpeta: String
+        let procesos: [Int32]
+        let subagentes: Int
     }
 
     private struct Previo {
@@ -71,7 +92,9 @@ final class Vigia: ObservableObject {
 
     private let cola = DispatchQueue(label: "sauron.lectura", qos: .utility)
     private let lector = LectorTranscript()
+    private let contador = ContadorSubagentes()
     private var observador: Observador?
+    private var observadorSubagentes: Observador?
     private var respaldo: Timer?
     /// Fin de cada proceso de Claude Code: si muere sin borrar su registro
     /// (cierre forzado), se entera al instante y sin sondear.
@@ -93,6 +116,14 @@ final class Vigia: ObservableObject {
     /// temporizador es solo un respaldo por si se perdiera un evento.
     func iniciar() {
         observador = Observador(rutas: [Rutas.sesiones.path, Rutas.ide.path]) { [weak self] in
+            self?.refrescar()
+        }
+        // Un subagente escribe su meta al empezar y al terminar. Se vigila
+        // toda la carpeta de proyectos pero solo esos archivos despiertan una
+        // lectura; los transcripts, que cambian sin parar, se descartan.
+        observadorSubagentes = Observador(rutas: [Rutas.proyectos.path], latencia: 1.0, filtro: { ruta in
+            ruta.hasSuffix(".meta.json") && ruta.contains("/subagents/")
+        }) { [weak self] in
             self?.refrescar()
         }
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.refrescar() }
@@ -128,14 +159,20 @@ final class Vigia: ObservableObject {
             return
         }
         leyendo = true
-        cola.async { [weak self, lector] in
+        cola.async { [weak self, lector, contador] in
             let carpetas = Registro.carpetasAbiertas()
             let registros = Registro.sesiones()
-            let lecturas = registros.map { r in
-                Lectura(
+            let lecturas = registros.map { r -> Lectura in
+                let transcript = lector.datos(sesion: r.sesion, cwd: r.cwd)
+                let subagentes = lector.carpetaSubagentes(de: r.sesion)
+                    .map { contador.activos(en: $0, desde: r.inicio) } ?? 0
+                return Lectura(
                     registro: r,
-                    transcript: lector.datos(sesion: r.sesion, cwd: r.cwd),
-                    carpeta: Registro.carpeta(para: r.cwd, en: carpetas)
+                    transcript: transcript,
+                    carpeta: Registro.carpeta(para: r.cwd, en: carpetas),
+                    // Trabajando, un hijo es el comando en curso: solo cuenta en reposo.
+                    procesos: r.estado == "idle" ? Procesos.enSegundoPlano(de: r.pid) : [],
+                    subagentes: subagentes
                 )
             }
             lector.olvidar(salvo: Set(registros.map(\.sesion)))
@@ -178,19 +215,31 @@ final class Vigia: ObservableObject {
             vivas.insert(id)
             let previo = previos[id]
             var inicio = previo?.inicioTurno
+            // Turno terminado pero con trabajo en segundo plano (un comando o
+            // subagentes): para Sauron la sesion sigue trabajando y todavia
+            // no "termino".
+            let enFondo = !l.procesos.isEmpty || (r.estado == "idle" && l.subagentes > 0)
+            let estado = r.estado == "idle" && enFondo ? Self.fondo : r.estado
 
-            switch r.estado {
-            case "busy", "waiting":
+            switch estado {
+            case "busy", "waiting", Self.fondo:
                 if previo == nil || previo?.estado == "idle" { inicio = r.actualizado }
                 terminadas[id] = nil
                 porConfirmar[id] = nil
-                let empiezaEspera = r.estado == "waiting"
+                let empiezaEspera = estado == "waiting"
                     && (previo.map { $0.estado != "waiting" } ?? !primeraPasada)
                 if empiezaEspera { avisosAtencion.append(id) }
             default:
-                if let p = previo, p.estado == "busy", !primeraPasada {
-                    let duracion = r.actualizado.timeIntervalSince(inicio ?? r.actualizado)
-                    if duracion >= Self.turnoMinimo { porConfirmar[id] = r.actualizado }
+                if let p = previo, p.estado == "busy" || p.estado == Self.fondo, !primeraPasada {
+                    // Al acabar el trabajo de fondo, Claude Code suele retomar
+                    // la conversacion enseguida: se mide hasta ahora y se
+                    // espera el doble antes de dar el turno por terminado.
+                    let desdeFondo = p.estado == Self.fondo
+                    let fin = desdeFondo ? ahora : r.actualizado
+                    let duracion = fin.timeIntervalSince(inicio ?? fin)
+                    if duracion >= Self.turnoMinimo {
+                        porConfirmar[id] = desdeFondo ? ahora.addingTimeInterval(Self.confirmacion) : r.actualizado
+                    }
                 }
                 inicio = nil
                 if let t = porConfirmar[id] {
@@ -203,12 +252,13 @@ final class Vigia: ObservableObject {
                     }
                 }
             }
-            previos[id] = Previo(estado: r.estado, inicioTurno: inicio)
+            previos[id] = Previo(estado: estado, inicioTurno: inicio)
 
             let fase: Fase
-            switch r.estado {
+            switch estado {
             case "waiting": fase = .atencion
             case "busy": fase = .trabajando
+            case Self.fondo: fase = .segundoPlano
             default: fase = terminadas[id] != nil ? .termino : .inactiva
             }
             let t = l.transcript
@@ -221,11 +271,15 @@ final class Vigia: ObservableObject {
                 modo: Modo(texto: t.modo),
                 fase: fase,
                 esperaPor: r.esperaPor,
-                desde: fase == .termino ? (terminadas[id] ?? r.actualizado) : r.actualizado
+                desde: fase == .termino ? (terminadas[id] ?? r.actualizado) : r.actualizado,
+                subagentes: l.subagentes,
+                procesos: l.procesos.count
             ))
         }
 
-        vigilarProcesos(Set(lecturas.map(\.registro.pid)))
+        // Tambien los comandos en segundo plano: su fin no cambia el registro
+        // de la sesion, asi que es lo unico que avisa.
+        vigilarProcesos(Set(lecturas.map(\.registro.pid)).union(lecturas.flatMap(\.procesos)))
 
         for id in previos.keys where !vivas.contains(id) {
             previos[id] = nil
@@ -266,7 +320,8 @@ final class Vigia: ObservableObject {
 
     private func reconstruir(_ s: Sesion, fase: Fase) -> Sesion {
         Sesion(id: s.id, pid: s.pid, cwd: s.cwd, carpeta: s.carpeta, titulo: s.titulo,
-               modo: s.modo, fase: fase, esperaPor: s.esperaPor, desde: s.desde)
+               modo: s.modo, fase: fase, esperaPor: s.esperaPor, desde: s.desde,
+               subagentes: s.subagentes, procesos: s.procesos)
     }
 
     static func orden(_ a: Sesion, _ b: Sesion) -> Bool {
@@ -282,22 +337,32 @@ final class Vigia: ObservableObject {
 final class Observador {
     private var flujo: FSEventStreamRef?
     private let accion: () -> Void
+    /// Si esta, solo despiertan los eventos de rutas que lo cumplen.
+    private let filtro: ((String) -> Bool)?
 
-    init(rutas: [String], accion: @escaping () -> Void) {
+    init(rutas: [String], latencia: CFTimeInterval = 0.2, filtro: ((String) -> Bool)? = nil,
+         accion: @escaping () -> Void) {
         self.accion = accion
+        self.filtro = filtro
         var contexto = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),
             retain: nil, release: nil, copyDescription: nil
         )
-        let retorno: FSEventStreamCallback = { _, info, _, _, _, _ in
+        let retorno: FSEventStreamCallback = { _, info, _, rutasEvento, _, _ in
             guard let info else { return }
-            Unmanaged<Observador>.fromOpaque(info).takeUnretainedValue().accion()
+            let yo = Unmanaged<Observador>.fromOpaque(info).takeUnretainedValue()
+            if let filtro = yo.filtro {
+                let lista = Unmanaged<CFArray>.fromOpaque(rutasEvento).takeUnretainedValue() as? [String] ?? []
+                guard lista.contains(where: filtro) else { return }
+            }
+            yo.accion()
         }
-        let banderas = FSEventStreamCreateFlags(kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagFileEvents)
+        let banderas = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
         guard let flujo = FSEventStreamCreate(
             nil, retorno, &contexto, rutas as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2, banderas
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latencia, banderas
         ) else { return }
         FSEventStreamSetDispatchQueue(flujo, DispatchQueue.main)
         FSEventStreamStart(flujo)

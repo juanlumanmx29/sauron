@@ -16,6 +16,7 @@ Sources/Sauron/
   Registro.swift       lee ~/.claude/sessions (estado por proceso) y ~/.claude/ide (carpetas por ventana)
   Transcript.swift     título y modo desde el .jsonl: lectura hacia atrás y luego incremental
   Estado.swift         Vigia: máquina de estados, eventos; FSEvents + fin de proceso, respaldo de 60 s
+  Actividad.swift      trabajo en segundo plano: comandos (procesos hijos) y subagentes (meta.json)
   Panel.swift          NSPanel flotante, Controlador (ancla, arrastre, asomarse, menú)
   Vistas.swift         SwiftUI: píldora, lista, fila, aviso
   Logo.swift           el Ojo: icono de la app, logo del README y ojo de la píldora (Core Graphics)
@@ -50,6 +51,24 @@ Sources/Sauron/
 ## Trampas ya encontradas
 
 - **`@State` es una macro en este SDK.** Ver regla 1.
+- **"idle" no siempre es "terminó".** Con comandos en segundo plano (Bash
+  `run_in_background`, Monitor) o subagentes, el registro dice `idle` y la
+  sesión sigue trabajando. Comandos: hijos del proceso de la sesión cuya línea
+  lleva `/shell-snapshots/` (así los lanza el Bash de Claude Code; los
+  servidores MCP también son hijos, pero sin esa marca). Con la sesión
+  trabajando, ese hijo es el comando en curso: solo se cuentan en reposo.
+  Subagentes: `<sesión>/subagents/agent-*.meta.json` sin `finished` (se
+  agrega `true` al terminar). Uno cortado al cerrar la sesión queda sin
+  `finished`: solo cuenta si su transcript es posterior al `startedAt` del
+  proceso y de menos de 2 h. Los terminados se recuerdan y no se releen.
+- **El fin del trabajo de fondo no cambia el registro de la sesión**: los
+  comandos se vigilan con una fuente de fin de proceso y los subagentes con
+  FSEvents sobre `projects/` (latencia 1 s, filtrado a `*.meta.json` de
+  `subagents/`; los transcripts, que cambian sin parar, se descartan). Al
+  terminar, Claude Code suele retomar enseguida: "Terminó" espera 3 s.
+- **En las simulaciones, `zsh -c "…; sleep N"` pierde la marca**: zsh se
+  reemplaza por el último comando. Claude Code siempre agrega comandos
+  después (`eval`, `pwd`), así que en la realidad el `zsh` queda.
 - **Hook y diálogo compiten** (`Promise.race` en la ruta del host SDK de la
   extensión, 2.1.331): si el hook decide primero, Claude Code cancela el
   diálogo de VS Code; si se contesta en VS Code, la salida del hook se ignora
@@ -200,4 +219,8 @@ Para la máquina de estados, simular transiciones escribiendo registros falsos
 en una carpeta apuntada por `SAURON_CLAUDE_DIR` (con `sessions/`, `ide/` y
 `projects/`) y leer los eventos que Sauron imprime por la salida estándar.
 Casos mínimos: turno terminado, permiso pedido, turno corto sin aviso, mensaje
-en cola sin aviso, sesión de CLI y `spare` ignoradas, sesión cerrada.
+en cola sin aviso, sesión de CLI y `spare` ignoradas, sesión cerrada, y
+trabajo de fondo: comando en segundo plano (el aviso llega cuando termina),
+comando tras el que Claude retoma (sin aviso intermedio) y subagente (aviso
+al escribir `finished`). Para el comando, la "sesión" falsa debe ser un
+proceso propio que lance `zsh -c "source …/shell-snapshots/… ; sleep N; true"`.

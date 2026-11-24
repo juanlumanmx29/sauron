@@ -70,7 +70,8 @@ struct Pildora: View {
 
     private var atencion: Int { sesiones.filter { $0.fase == .atencion }.count }
     private var termino: Int { sesiones.filter { $0.fase == .termino }.count }
-    private var trabajando: Int { sesiones.filter { $0.fase == .trabajando }.count }
+    /// Lo que espera trabajo en segundo plano tambien esta trabajando.
+    private var trabajando: Int { sesiones.filter { $0.fase == .trabajando || $0.fase == .segundoPlano }.count }
 
     var body: some View {
         let a = atencion
@@ -404,6 +405,13 @@ struct FilaSesion: View {
                             .padding(.vertical, 1)
                             .background(Capsule().fill(s.modo.color.opacity(0.16)))
                     }
+                    if s.subagentes > 0 || s.procesos > 0 {
+                        HStack(spacing: 4) {
+                            if s.subagentes > 0 { FichaActividad(icono: "person.2.fill", cuenta: s.subagentes) }
+                            if s.procesos > 0 { FichaActividad(icono: "terminal.fill", cuenta: s.procesos) }
+                        }
+                        .help(s.detalleActividad)
+                    }
                     Spacer(minLength: 4)
                     Relativo(desde: s.desde).foregroundStyle(.tertiary)
                 }
@@ -483,6 +491,8 @@ struct IconoFase: View {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(Tema.verde)
         case .trabajando:
             Destello(girando: true, tamano: 10)
+        case .segundoPlano:
+            Image(systemName: "hourglass").foregroundStyle(Tema.claude)
         case .inactiva:
             Image(systemName: "moon.fill").foregroundStyle(Tema.gris)
         }
@@ -495,11 +505,13 @@ struct Relativo: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 15)) { contexto in
             Text(Self.texto(contexto.date.timeIntervalSince(desde)))
+                .lineLimit(1)
+                .fixedSize()
         }
     }
 
     static func texto(_ s: TimeInterval) -> String {
-        if s < 60 { return "hace un momento" }
+        if s < 60 { return "ahora" }
         if s < 3600 { return "hace \(Int(s / 60)) min" }
         if s < 86400 { return "hace \(Int(s / 3600)) h" }
         return "hace \(Int(s / 86400)) d"
@@ -526,5 +538,23 @@ struct AvisoSinEfecto: View {
         }
         .font(.system(size: 10.5, weight: .medium))
         .padding(.leading, 13)
+    }
+}
+
+/// Ficha compacta con un icono y una cuenta: subagentes o comandos en
+/// segundo plano de una sesion.
+struct FichaActividad: View {
+    let icono: String
+    let cuenta: Int
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: icono).font(.system(size: 8, weight: .semibold))
+            Text(verbatim: "\(cuenta)").font(.system(size: 9.5, weight: .semibold).monospacedDigit())
+        }
+        .foregroundStyle(Tema.claude)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(Capsule().fill(Tema.claude.opacity(0.16)))
     }
 }

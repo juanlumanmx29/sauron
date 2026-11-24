@@ -58,7 +58,9 @@ enum Fase: Int, Comparable {
     case atencion = 0
     case termino = 1
     case trabajando = 2
-    case inactiva = 3
+    /// Turno terminado, pero con comandos o subagentes en segundo plano.
+    case segundoPlano = 3
+    case inactiva = 4
 
     static func < (a: Fase, b: Fase) -> Bool { a.rawValue < b.rawValue }
 
@@ -66,7 +68,7 @@ enum Fase: Int, Comparable {
         switch self {
         case .atencion: return Tema.ambar
         case .termino: return Tema.verde
-        case .trabajando: return Tema.claude
+        case .trabajando, .segundoPlano: return Tema.claude
         case .inactiva: return Tema.gris
         }
     }

@@ -8,12 +8,14 @@ enum Volcado {
     static func ejecutar() {
         let carpetas = Registro.carpetasAbiertas()
         let lector = LectorTranscript()
+        let contador = ContadorSubagentes()
         let inicio = Date()
         var salida: [[String: Any]] = []
 
         for r in Registro.sesiones(soloVSCode: false).sorted(by: { $0.cwd < $1.cwd }) {
             let t = lector.datos(sesion: r.sesion, cwd: r.cwd)
             let carpeta = Registro.carpeta(para: r.cwd, en: carpetas)
+            let subagentes = lector.carpetaSubagentes(de: r.sesion).map { contador.activos(en: $0, desde: r.inicio) } ?? 0
             salida.append([
                 "pid": r.pid,
                 "sesion": r.sesion,
@@ -28,6 +30,8 @@ enum Volcado {
                 "modo": t.modo ?? NSNull(),
                 "estado": r.estado,
                 "esperaPor": r.esperaPor ?? NSNull(),
+                "subagentes": subagentes,
+                "procesosEnSegundoPlano": Procesos.enSegundoPlano(de: r.pid).count,
                 "actualizado": ISO8601DateFormatter().string(from: r.actualizado),
             ])
         }
